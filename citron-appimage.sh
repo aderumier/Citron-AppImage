@@ -99,8 +99,8 @@ echo 'unset LD_LIBRARY_PATH
 unset LD_PRELOAD' > ./.env
 
 # Prepare sharun
-ln ./sharun ./AppRun
-./sharun -g
+#ln ./sharun ./AppRun
+#./sharun -g
 
 # turn appdir into appimage
 cd ..
