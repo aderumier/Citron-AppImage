@@ -1,29 +1,34 @@
-name: Build & Release Citron AppImage
+name: Build Citron (Nightly)
 concurrency:
-  group: build-${{ github.ref }}
+  group: build-nightly-${{ github.ref }}
   cancel-in-progress: true
 
 on:
   schedule:
-    - cron: "0 14 * * 0"
+    - cron: "0 0 * * *"
   workflow_dispatch: {}
 
 jobs:
   build:
-    name: "${{ matrix.name }}"
+    name: "${{ matrix.name }} (${{ matrix.arch }})"
     runs-on: ${{ matrix.runs-on }}
     strategy:
       matrix:
         include:
           - runs-on: ubuntu-latest
-            script: "./*-appimage.sh"
             optimized: false
             name: "Citron build (Normal)"
+            arch: x86_64
           - runs-on: ubuntu-latest
-            script: "./*-appimage.sh v3"
             optimized: true
             name: "Citron Build (Optimized)"
-    container: artixlinux/artixlinux:latest
+            arch: x86_64
+          # TODO: Debug ARM builds (fails with intel-vulkan dep for arch on arm
+          # - runs-on: ubuntu-24.04-arm
+          #   name: "Citron Build (Normal)"
+          #   optimized: false
+          #   arch: aarch64
+    container: ghcr.io/pkgforge-dev/archlinux:latest
     steps:
       - uses: actions/checkout@v4
         with:
@@ -34,10 +39,8 @@ jobs:
         run: |
           sed -i 's/DownloadUser/#DownloadUser/g' /etc/pacman.conf
           pacman -Syu --noconfirm base-devel strace patchelf curl wget \
-            desktop-file-utils git artix-archlinux-support llvm mesa xorg-server-xvfb \
-            vulkan-radeon vulkan-intel vulkan-nouveau pulseaudio pulseaudio-alsa pipewire
-          pacman-key --init && pacman-key --populate archlinux
-          printf "\n[extra]\nInclude = /etc/pacman.d/mirrorlist-arch\n" | tee -a /etc/pacman.conf
+            desktop-file-utils git mesa xorg-server-xvfb \
+            vulkan-radeon vulkan-intel vulkan-nouveau pulseaudio pulseaudio-alsa pipewire-audio
           sudo pacman -Syu --noconfirm \
             zsync \
             catch2 \
@@ -51,8 +54,10 @@ jobs:
             xcb-util-wm \
             xcb-util-image \
             xcb-util-renderutil \
+            libdecor \
             libxkbcommon-x11 \
             libxi \
+            libxss \
             nasm \
             qt6-tools \
             qt6-base \
@@ -91,15 +96,6 @@ jobs:
             libzip \
             qt6ct
 
-          echo "Hacking makepkg to allow building as root in the container..."
-          sudo sed -i 's|EUID == 0|EUID == 69|g' /usr/bin/makepkg
-          mkdir -p /usr/local/bin
-          cp /usr/bin/makepkg /usr/local/bin
-
-          echo "its -O3 the letter, not -03 the number"
-          sudo sed -i 's|-O2|-O3|; s|MAKEFLAGS=.*|MAKEFLAGS="-j$(nproc)"|; s|#MAKEFLAGS|MAKEFLAGS|' /etc/makepkg.conf
-          cat /etc/makepkg.conf
-
       - name: Install debloated llvm-libs
         run: |
           LLVM_URL="https://github.com/pkgforge-dev/llvm-libs-debloated/releases/download/continuous/llvm-libs-nano-x86_64.pkg.tar.zst"
@@ -126,7 +122,7 @@ jobs:
       - name: Compile Citron (Normal)
         if: ${{ matrix.optimized == false }}
         run: |
-          chmod +x ./*-appimage.sh && ./*-appimage.sh
+          chmod +x ./citron-appimage.sh && DEVEL=true ./citron-appimage.sh v3
           mkdir -p dist
           mv *.AppImage* dist/
 
@@ -135,14 +131,14 @@ jobs:
         run: |
           rm -rf ./AppDir || true
           sudo pacman -R --noconfirm citron || true
-          chmod +x ./*-appimage.sh && ./*-appimage.sh v3
+          chmod +x ./citron-appimage.sh && DEVEL=true ./citron-appimage.sh v3
           mkdir -p dist
           mv *.AppImage* dist/
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4.6.1
         with:
-          name: citron-${{ matrix.optimized && 'optimized' || 'normal' }}-appimage
+          name: citron-${{ matrix.optimized && 'optimized' || 'normal' }}-appimage-${{ matrix.arch }}
           path: "dist"
 
       - name: Check version file
@@ -169,11 +165,15 @@ jobs:
     steps:
       - uses: actions/download-artifact@v4.1.9
         with:
-          name: citron-optimized-appimage
+          name: citron-optimized-appimage-x86_64
 
       - uses: actions/download-artifact@v4.1.9
         with:
-          name: citron-normal-appimage
+          name: citron-normal-appimage-x86_64
+
+      # - uses: actions/download-artifact@v4.1.9
+      #   with:
+      #     name: citron-normal-appimage-aarch64
 
       - uses: actions/download-artifact@v4.1.9
         with:
@@ -181,37 +181,14 @@ jobs:
 
       - name: Read version
         run: |
-          cat version
-          export VERSION="$(<version)"
-          SNAPSHOT_TAG="$(date --utc +'%Y%m%d-%H%M%S')"
+          export VERSION="$(cat version)"
           echo "APP_VERSION=${VERSION}" >> "${GITHUB_ENV}"
-          echo SNAPSHOT_TAG="${SNAPSHOT_TAG}" >> "${GITHUB_ENV}"
 
-      - name: Del Previous Release
-        run: |
-          gh release delete "${APP_VERSION}" --repo "${GITHUB_REPOSITORY}" --cleanup-tag  -y
-          sleep 5
-        env:
-          GH_TOKEN: "${{ secrets.GITHUB_TOKEN }}"
-        continue-on-error: true
-      - name: Continuous Releaser
-        uses: softprops/action-gh-release@v2
+      - uses: softprops/action-gh-release@v2
         with:
-          name: "Citron AppImage ${{ env.APP_VERSION }}"
-          tag_name: "${{ env.APP_VERSION }}"
-          prerelease: false
-          draft: false
-          generate_release_notes: false
-          make_latest: true
-          files: |
-            *.AppImage*
-
-      - name: Snapshot Releaser
-        uses: softprops/action-gh-release@v2
-        with:
-          name: "Snapshot ${{ env.APP_VERSION }}"
-          tag_name: "${{ env.SNAPSHOT_TAG }}"
-          prerelease: false
+          name: "Continuous Build (Nightly Version: ${{ env.APP_VERSION }})"
+          tag_name: "nightly"
+          prerelease: true
           draft: false
           generate_release_notes: false
           make_latest: false
